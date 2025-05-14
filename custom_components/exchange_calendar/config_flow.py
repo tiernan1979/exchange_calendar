@@ -3,7 +3,6 @@ import logging
 import voluptuous as vol
 from exchangelib import Account, Credentials, Configuration, DELEGATE, CalendarItem
 from homeassistant import config_entries
-from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
 from homeassistant.core import callback
 from exchangelib.protocol import BaseProtocol, NoVerifyHTTPAdapter
 import pytz
@@ -11,6 +10,8 @@ import pytz
 from .const import (
     DOMAIN,
     CONF_SERVER,
+    CONF_EMAIL,
+    CONF_PASSWORD,
     CONF_TIMEZONE,
     CONF_AUTH_TYPE,
     AUTH_TYPES,
@@ -51,15 +52,15 @@ class ExchangeCalendarConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     data=user_input,
                 )
             except Exception as err:
-                errors["base"] = "cannot_connect"
                 if "SSLError" in str(err):
-                    errors["base"] = "ssl_error"
+                    errors["base"] = "SSL Error".str(err)
                     _LOGGER.error(
-                        "1 SSL certificate verification failed for %s. Fix the server's SSL certificate: %s",
+                        "SSL certificate verification failed for %s. Fix the server's SSL certificate: %s",
                         server,
                         err,
                     )
                 else:
+                    errors["base"] = "Connection failed : ".str(err)
                     _LOGGER.error(
                         "Connection failed for %s: %s", user_input[CONF_SERVER], err
                     )
