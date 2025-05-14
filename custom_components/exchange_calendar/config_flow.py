@@ -16,7 +16,7 @@ from .const import (
     AUTH_TYPES,
 )
 
-LOGGER = logging.getLogger(__name__)
+_LOGGER = logging.getLogger(__name__)
 
 class ExchangeCalendarConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Exchange Calendar."""
