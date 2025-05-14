@@ -1,5 +1,6 @@
 # Home Assistant Exchange Calendar
 [![hacs_badge](https://img.shields.io/badge/HACS-Default-orange.svg)](https://github.com/custom-components/hacs)
+
 This custom component for Home Assistant allows you to create/delete and search exchange calendar events.
 
 ## Home Assistant Integration
