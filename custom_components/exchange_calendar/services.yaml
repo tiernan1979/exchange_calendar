@@ -1,70 +1,68 @@
-exchange_create_event:
+create_event:
   name: Create Calendar Event
   description: Creates a new event in the Exchange calendar.
   fields:
-    summary:
-      name: Summary
-      description: The title of the event.
-      required: true
+    subject:
+      name: Subject
+      description: The subject of the event.
       example: "Team Meeting"
+      required: true
       selector:
         text:
-    start:
+    date_start:
       name: Start Time
-      description: The start time of the event (ISO format, e.g., 2025-05-10T10:00:00Z).
+      description: The start time of the event in ISO format.
+      example: "2025-05-13 10:00:00"
       required: true
-      example: "2025-05-10T10:00:00Z"
       selector:
-        text:
-    end:
+        datetime: {}
+    date_end:
       name: End Time
-      description: The end time of the event (ISO format, e.g., 2025-05-10T11:00:00Z).
+      description: The end time of the event in ISO format.
+      example: "2025-05-13 11:00:00"
       required: true
-      example: "2025-05-10T11:00:00Z"
+      selector:
+        datetime: {}
+    location:
+      name: Location
+      description: The location of the event.
+      example: "Conference Room"
       selector:
         text:
-    description:
-      name: Description
-      description: Additional details about the event.
-      required: false
-      example: "Discuss project updates"
+    body:
+      name: Body
+      description: The body or description of the event.
+      example: "Discuss project updates."
       selector:
         text:
 
-exchange_delete_event:
+delete_event:
   name: Delete Calendar Event
-  description: Deletes an event from the Exchange calendar by its event ID.
+  description: Deletes an event from the Exchange calendar by ID.
   fields:
     event_id:
       name: Event ID
       description: The unique ID of the event to delete.
+      example: "AAMkAGI2..."
       required: true
-      example: "AAMkAD..."
       selector:
         text:
 
-exchange_search_events:
+search_event:
   name: Search Calendar Events
-  description: Searches for events in the Exchange calendar matching a search term.
+  description: Searches for events in the Exchange calendar within a date range.
   fields:
-    search_term:
-      name: Search Term
-      description: The term to search for in event summary or description.
-      required: true
-      example: "Meeting"
-      selector:
-        text:
-    start:
+    date_start:
       name: Start Time
-      description: The start of the time range to search (ISO format, e.g., 2025-05-01T00:00:00Z).
-      required: false
-      example: "2025-05-01T00:00:00Z"
+      description: The start time of the search range in ISO format.
+      example: "2025-05-13 00:00:00"
+      required: true
       selector:
-        text:
-    end:
+        datetime: {}
+    date_end:
       name: End Time
-      description: The end of the time range to search (ISO format, e.g., 2025-05-31T23:59:59Z).
-      required: false
-      example: "2025-05-31T23:59:59Z"
+      description: The end time of the search range in ISO format.
+      example: "2025-05-14 00:00:00"
+      required: true
       selector:
-        text:
+        datetime: {}
