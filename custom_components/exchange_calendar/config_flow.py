@@ -51,19 +51,27 @@ class ExchangeCalendarConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     title=user_input[CONF_EMAIL],
                     data=user_input,
                 )
-            except Exception as err:
+           except Exception as err:
                 if "SSLError" in str(err):
-                    errors["base"] = f"SSL Error: {err}"
+                    errors["base"] = f"SSL Error"
                     _LOGGER.error(
                         "SSL certificate verification failed for %s. Fix the server's SSL certificate: %s",
-                        server,
+                        user_input[CONF_SERVER],
+                        err,
+                    )
+                elif "Unauth" in str(err):
+                    errors["base"] = f"Unauthorized"
+                    _LOGGER.error(
+                        "Authentication failed for %s. Error: %s",
+                        user_input[CONF_SERVER],
                         err,
                     )
                 else:
-                    errors["base"] = "Connection failed : {err}"
+                    errors["base"] = f"Connection failed"
                     _LOGGER.error(
                         "Connection failed for %s: %s", user_input[CONF_SERVER], err
                     )
+
 
         return self.async_show_form(
             step_id="user",
