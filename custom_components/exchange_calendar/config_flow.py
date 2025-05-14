@@ -53,14 +53,14 @@ class ExchangeCalendarConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 )
             except Exception as err:
                 if "SSLError" in str(err):
-                    errors["base"] = "SSL Error".str(err)
+                    errors["base"] = f"SSL Error: {err}"
                     _LOGGER.error(
                         "SSL certificate verification failed for %s. Fix the server's SSL certificate: %s",
                         server,
                         err,
                     )
                 else:
-                    errors["base"] = "Connection failed : ".str(err)
+                    errors["base"] = "Connection failed : {err}"
                     _LOGGER.error(
                         "Connection failed for %s: %s", user_input[CONF_SERVER], err
                     )
