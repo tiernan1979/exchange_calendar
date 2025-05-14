@@ -1,4 +1,5 @@
 import datetime
+import logging
 import voluptuous as vol
 from exchangelib import Account, Credentials, Configuration, DELEGATE, CalendarItem
 from homeassistant import config_entries
@@ -14,6 +15,8 @@ from .const import (
     CONF_AUTH_TYPE,
     AUTH_TYPES,
 )
+
+LOGGER = logging.getLogger(__name__)
 
 class ExchangeCalendarConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Exchange Calendar."""
@@ -51,13 +54,13 @@ class ExchangeCalendarConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 errors["base"] = "cannot_connect"
                 if "SSLError" in str(err):
                     errors["base"] = "ssl_error"
-                    self.hass.components.logger.error(
-                        "SSL certificate verification failed for %s. Fix the server's SSL certificate: %s",
-                        user_input[CONF_SERVER],
+                    _LOGGER.error(
+                        "1 SSL certificate verification failed for %s. Fix the server's SSL certificate: %s",
+                        server,
                         err,
                     )
                 else:
-                    self.hass.components.logger.error(
+                    _LOGGER.error(
                         "Connection failed for %s: %s", user_input[CONF_SERVER], err
                     )
 
