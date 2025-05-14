@@ -27,7 +27,7 @@ exchange_calendar.delete_event - Delete a Calendar event via event ID
 ```yaml
 action: exchange_calendar.delete_event
 data:
-  event_id: >-
+  event_id: 14908askdj39487y98y49w75q2[o5yP35Yw9q%[q356
 ```
 
 exchange_calendar.search_event - Search for events in a date period and respond with information
