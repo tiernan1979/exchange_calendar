@@ -1,397 +1,100 @@
-"""Calendar platform for Exchange Calendar."""
 from datetime import datetime, timedelta
 import logging
-from typing import Any, List
+from typing import Any, Dict, List
 
-from exchangelib import Account, Credentials, Configuration, DELEGATE, EWSTimeZone
-from exchangelib.items import CalendarItem
+import pytz
 from homeassistant.components.calendar import CalendarEntity, CalendarEvent
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
 
+from .const import DOMAIN, CONF_TIMEZONE
 _LOGGER = logging.getLogger(__name__)
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    config_entry: ConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    entry: ConfigEntry,
+    async_add_entities,
 ) -> None:
     """Set up the calendar platform."""
-    config = hass.data[DOMAIN][config_entry.entry_id]
-    calendar = ExchangeCalendar(hass, config)
-    async_add_entities([calendar])
+    account = hass.data[DOMAIN][entry.entry_id]["account"]
+    timezone = hass.data[DOMAIN][entry.entry_id]["timezone"]
+    async_add_entities([ExchangeCalendarEntity(account, timezone, entry.title)])
 
-class ExchangeCalendar(CalendarEntity):
-    """A calendar entity that pulls events from an Exchange server."""
+class ExchangeCalendarEntity(CalendarEntity):
+    """A calendar entity for Exchange Calendar."""
 
-    def __init__(self, hass: HomeAssistant, config: dict) -> None:
-        """Initialize the calendar."""
-        self.hass = hass
-        self._config = config
-        self._events: List[CalendarEvent] = []
-        self._attr_name = config.get("calendar_name", "Exchange Calendar")
-        self._attr_unique_id = f"calendar_{config['server']}"
-        self._last_event_ids = set()
-        self._account = None
-
-    async def _get_account(self) -> Account:
-        """Get or create an Exchange account connection."""
-        if self._account is None:
-            credentials = Credentials(
-                username=self._config["username"],
-                password=self._config["password"],
-            )
-            config = Configuration(
-                server=self._config["server"],
-                credentials=credentials,
-            )
-            timezone = EWSTimeZone(self._config["timezone"])
-            self._account = Account(
-                primary_smtp_address=self._config["username"],
-                config=config,
-                autodiscover=False,
-                access_type=DELEGATE,
-                default_timezone=timezone,
-            )
-        return self._account
+    def __init__(self, account, timezone, name):
+        self._account = account
+        self._timezone = timezone
+        self._name = name
+        self._attr_unique_id = f"{DOMAIN}_{name}"
+        self._event = None
 
     @property
-    def event(self) -> CalendarEvent | None:
-        """Return the next upcoming event."""
-        now = dt_util.now()
-        for event in sorted(self._events, key=lambda x: x.start):
-            if event.start >= now:
-                return event
-        return None
-
-    async def async_get_events(
-        self, hass: HomeAssistant, start_date: datetime, end_date: datetime
-    ) -> List[CalendarEvent]:
-        """Get all events in a specific time frame."""
-        return [
-            event for event in self._events
-            if start_date <= event.start <= end_date
-        ]
-
-    async def async_update(self) -> None:
-        """Update calendar events from Exchange server."""
-        try:
-            account = await self._get_account()
-            now = dt_util.now()
-            start = now - timedelta(days=1)
-            end = now + timedelta(days=30)
-
-            events = account.calendar.view(start=start, end=end)
-            new_events = []
-            current_event_ids = set()
-
-            for event in events:
-                event_id = event.item_id
-                current_event_ids.add(event_id)
-
-                start = event.start
-                end = event.end
-                summary = event.subject or "No title"
-                description = event.body or ""
-
-                calendar_event = CalendarEvent(
-                    start=start,
-                    end=end,
-                    summary=summary,
-                    description=description,
-                )
-                new_events.append(calendar_event)
-
-                # Trigger event for new or updated events
-                if event_id not in self._last_event_ids:
-                    self.hass.bus.async_fire(
-                        "calendar.event_created",
-                        {"event_id": event_id, "summary": summary, "start": start},
-                    )
-                else:
-                    self.hass.bus.async_fire(
-                        "calendar.event_updated",
-                        {"event_id": event_id, "summary": summary, "start": start},
-                    )
-
-            self._events = new_events
-            self._last_event_ids = current_event_ids
-
-        except Exception as err:
-            _LOGGER.error("Error updating calendar: %s", err)
-
-    async def async_create_event(self, **kwargs: Any) -> None:
-        """Create a new event in the calendar."""
-        try:
-            account = await self._get_account()
-            summary = kwargs.get("summary", "New Event")
-            start = dt_util.parse_datetime(kwargs.get("start")) or dt_util.now()
-            end = dt_util.parse_datetime(kwargs.get("end")) or start + timedelta(hours=1)
-            description = kwargs.get("description", "")
-
-            event = CalendarItem(
-                account=account,
-                folder=account.calendar,
-                subject=summary,
-                body=description,
-                start=start,
-                end=end,
-            )
-            event.save()
-            _LOGGER.info("Created new event: %s", summary)
-            await self.async_update()
-
-        except Exception as err:
-            _LOGGER.error("Error creating event: %s", err)
-
-    async def async_delete_event(self, **kwargs: Any) -> None:
-        """Delete an event from the calendar by item_id."""
-        try:
-            account = await self._get_account()
-            event_id = kwargs.get("event_id")
-            if not event_id:
-                _LOGGER.error("No event_id provided")
-                return
-
-            events = account.calendar.filter(item_id=event_id)
-            for event in events:
-                event.delete()
-                _LOGGER.info("Deleted event with ID: %s", event_id)
-                break
-            else:
-                _LOGGER.error("Event with ID %s not found", event_id)
-
-            await self.async_update()
-
-        except Exception as err:
-            _LOGGER.error("Error deleting event: %s", err)
-
-    async def async_search_events(self, **kwargs: Any) -> List[dict]:
-        """Search for events matching a search term within a time range."""
-        try:
-            account = await self._get_account()
-            search_term = kwargs.get("search_term", "").lower()
-            start = dt_util.parse_datetime(kwargs.get("start")) or dt_util.now()
-            end = dt_util.parse_datetime(kwargs.get("end")) or start + timedelta(days=30)
-
-            events = account.calendar.view(start=start, end=end)
-            matching_events = []
-
-            for event in events:
-                summary = (event.subject or "").lower()
-                description = (event.body or "").lower()
-                if search_term in summary or search_term in description:
-                    matching_events.append({
-                        "event_id": event.item_id,
-                        "summary": event.subject or "No title",
-                        "description": event.body or "",
-                        "start": event.start.isoformat(),
-                        "end": event.end.isoformat(),
-                    })
-
-            _LOGGER.info("Found %d events matching '%s'", len(matching_events), search_term)
-            return matching_events
-
-        except Exception as err:
-            _LOGGER.error("Error searching events: %s", err)
-            return []"""Calendar platform for Exchange Calendar."""
-from datetime import datetime, timedelta
-import logging
-from typing import Any, List
-
-from exchangelib import Account, Credentials, Configuration, DELEGATE, EWSTimeZone
-from exchangelib.items import CalendarItem
-from homeassistant.components.calendar import CalendarEntity, CalendarEvent
-from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.util import dt as dt_util
-
-_LOGGER = logging.getLogger(__name__)
-
-async def async_setup_entry(
-    hass: HomeAssistant,
-    config_entry: ConfigEntry,
-    async_add_entities: AddEntitiesCallback,
-) -> None:
-    """Set up the calendar platform."""
-    config = hass.data[DOMAIN][config_entry.entry_id]
-    calendar = ExchangeCalendar(hass, config)
-    async_add_entities([calendar])
-
-class ExchangeCalendar(CalendarEntity):
-    """A calendar entity that pulls events from an Exchange server."""
-
-    def __init__(self, hass: HomeAssistant, config: dict) -> None:
-        """Initialize the calendar."""
-        self.hass = hass
-        self._config = config
-        self._events: List[CalendarEvent] = []
-        self._attr_name = config.get("calendar_name", "Exchange Calendar")
-        self._attr_unique_id = f"calendar_{config['server']}"
-        self._last_event_ids = set()
-        self._account = None
-
-    async def _get_account(self) -> Account:
-        """Get or create an Exchange account connection."""
-        if self._account is None:
-            credentials = Credentials(
-                username=self._config["username"],
-                password=self._config["password"],
-            )
-            config = Configuration(
-                server=self._config["server"],
-                credentials=credentials,
-            )
-            timezone = EWSTimeZone(self._config["timezone"])
-            self._account = Account(
-                primary_smtp_address=self._config["username"],
-                config=config,
-                autodiscover=False,
-                access_type=DELEGATE,
-                default_timezone=timezone,
-            )
-        return self._account
+    def name(self) -> str:
+        """Return the name of the calendar."""
+        return self._name
 
     @property
-    def event(self) -> CalendarEvent | None:
+    def event(self) -> CalendarEvent:
         """Return the next upcoming event."""
-        now = dt_util.now()
-        for event in sorted(self._events, key=lambda x: x.start):
-            if event.start >= now:
-                return event
-        return None
+        return self._event
 
     async def async_get_events(
-        self, hass: HomeAssistant, start_date: datetime, end_date: datetime
+        self,
+        hass: HomeAssistant,
+        start_date: datetime,
+        end_date: datetime,
     ) -> List[CalendarEvent]:
-        """Get all events in a specific time frame."""
-        return [
-            event for event in self._events
-            if start_date <= event.start <= end_date
-        ]
-
-    async def async_update(self) -> None:
-        """Update calendar events from Exchange server."""
+        """Get events in the given date range."""
         try:
-            account = await self._get_account()
-            now = dt_util.now()
-            start = now - timedelta(days=1)
-            end = now + timedelta(days=30)
+            def fetch_and_materialize_events():
+                """Synchronous function to fetch and fully materialize events."""
+                # Fetch events and convert generator/iterator to a list to ensure all blocking calls happen here
+                events = list(self._account.calendar.view(
+                    start=start_date.astimezone(self._timezone),
+                    end=end_date.astimezone(self._timezone),
+                ))
+                # Convert to list of dicts to avoid passing complex objects across threads
+                return [
+                    {
+                        "subject": event.subject,
+                        "start": event.start,
+                        "end": event.end,
+                        "body": event.body,
+                        "location": event.location,
+                        "item_id": event.id,
+                    }
+                    for event in events
+                ]
 
-            events = account.calendar.view(start=start, end=end)
-            new_events = []
-            current_event_ids = set()
+            # Run the blocking operation in a thread pool
+            event_dicts = await hass.loop.run_in_executor(None, fetch_and_materialize_events)
 
-            for event in events:
-                event_id = event.item_id
-                current_event_ids.add(event_id)
-
-                start = event.start
-                end = event.end
-                summary = event.subject or "No title"
-                description = event.body or ""
-
-                calendar_event = CalendarEvent(
-                    start=start,
-                    end=end,
-                    summary=summary,
-                    description=description,
+            # Convert event dicts to CalendarEvent objects in async context
+            return [
+                CalendarEvent(
+                    summary=event_dict["subject"],
+                    start=event_dict["start"],
+                    end=event_dict["end"],
+                    description=event_dict["body"],
+                    location=event_dict["location"],
+                    uid=event_dict["item_id"],
                 )
-                new_events.append(calendar_event)
-
-                # Trigger event for new or updated events
-                if event_id not in self._last_event_ids:
-                    self.hass.bus.async_fire(
-                        "calendar.event_created",
-                        {"event_id": event_id, "summary": summary, "start": start},
-                    )
-                else:
-                    self.hass.bus.async_fire(
-                        "calendar.event_updated",
-                        {"event_id": event_id, "summary": summary, "start": start},
-                    )
-
-            self._events = new_events
-            self._last_event_ids = current_event_ids
-
+                for event_dict in event_dicts
+            ]
         except Exception as err:
-            _LOGGER.error("Error updating calendar: %s", err)
-
-    async def async_create_event(self, **kwargs: Any) -> None:
-        """Create a new event in the calendar."""
-        try:
-            account = await self._get_account()
-            summary = kwargs.get("summary", "New Event")
-            start = dt_util.parse_datetime(kwargs.get("start")) or dt_util.now()
-            end = dt_util.parse_datetime(kwargs.get("end")) or start + timedelta(hours=1)
-            description = kwargs.get("description", "")
-
-            event = CalendarItem(
-                account=account,
-                folder=account.calendar,
-                subject=summary,
-                body=description,
-                start=start,
-                end=end,
-            )
-            event.save()
-            _LOGGER.info("Created new event: %s", summary)
-            await self.async_update()
-
-        except Exception as err:
-            _LOGGER.error("Error creating event: %s", err)
-
-    async def async_delete_event(self, **kwargs: Any) -> None:
-        """Delete an event from the calendar by item_id."""
-        try:
-            account = await self._get_account()
-            event_id = kwargs.get("event_id")
-            if not event_id:
-                _LOGGER.error("No event_id provided")
-                return
-
-            events = account.calendar.filter(item_id=event_id)
-            for event in events:
-                event.delete()
-                _LOGGER.info("Deleted event with ID: %s", event_id)
-                break
-            else:
-                _LOGGER.error("Event with ID %s not found", event_id)
-
-            await self.async_update()
-
-        except Exception as err:
-            _LOGGER.error("Error deleting event: %s", err)
-
-    async def async_search_events(self, **kwargs: Any) -> List[dict]:
-        """Search for events matching a search term within a time range."""
-        try:
-            account = await self._get_account()
-            search_term = kwargs.get("search_term", "").lower()
-            start = dt_util.parse_datetime(kwargs.get("start")) or dt_util.now()
-            end = dt_util.parse_datetime(kwargs.get("end")) or start + timedelta(days=30)
-
-            events = account.calendar.view(start=start, end=end)
-            matching_events = []
-
-            for event in events:
-                summary = (event.subject or "").lower()
-                description = (event.body or "").lower()
-                if search_term in summary or search_term in description:
-                    matching_events.append({
-                        "event_id": event.item_id,
-                        "summary": event.subject or "No title",
-                        "description": event.body or "",
-                        "start": event.start.isoformat(),
-                        "end": event.end.isoformat(),
-                    })
-
-            _LOGGER.info("Found %d events matching '%s'", len(matching_events), search_term)
-            return matching_events
-
-        except Exception as err:
-            _LOGGER.error("Error searching events: %s", err)
+            _LOGGER.error("Failed to fetch events: %s", err)
             return []
+
+    async def async_update(self) -> None:
+        """Update the next event."""
+        now = dt_util.now()
+
+        events = await self.async_get_events(
+            hass=self.hass,
+            start_date=now,
+            end_date=now + timedelta(days=30),
+        )
+        self._event = min(events, key=lambda x: x.start) if events else None
