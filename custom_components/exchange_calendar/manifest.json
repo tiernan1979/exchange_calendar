@@ -3,8 +3,9 @@
   "name": "Exchange Calendar",
   "config_flow": true,
   "documentation": "https://github.com/tiernan1979/exchange_calendar/",
+  "issue_tracker": "https://github.com/tiernan1979/exchange_calendar/issues",
   "requirements": ["exchangelib==5.4.2"],
-  "codeowners": [@tiernan1979],
+  "codeowners": ["@tiernan1979"],
   "iot_class": "cloud_polling",
   "version": "1.0.1"
 }
