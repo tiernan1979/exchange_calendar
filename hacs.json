@@ -1,7 +1,7 @@
 {
     "name": "Exchange Calendar",
     "content_in_root": false,
-    "domains": ["sensor","exchange_calendar"],
+    "domains": ["sensor"],
     "iot_class": "cloud_poll",
     "homeassistant": "1.0.1"
 }
