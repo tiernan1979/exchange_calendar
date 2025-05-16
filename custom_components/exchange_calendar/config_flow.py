@@ -99,8 +99,11 @@ class ExchangeCalendarConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
 class ExchangeCalendarOptionsFlow(config_entries.OptionsFlow):
     """Handle options flow for Exchange Calendar."""
-
     def __init__(self, config_entry):
+        """Initialize options flow."""
+        self.config_entry = config_entry
+        
+    async def async_step_init(self, user_input=None):
         self.config_entry = config_entry
         if user_input is not None:
             try:
@@ -129,27 +132,26 @@ class ExchangeCalendarOptionsFlow(config_entries.OptionsFlow):
                     return self.async_abort(reason="no_changes")
             except vol.Invalid:
                 errors["base"] = "Invalid input provided"
-        else:
-            # Default timezone
-            default_timezone = (
-                self.config_entry.options.get(CONF_TIMEZONE) or
-                self.config_entry.data.get(CONF_TIMEZONE, "UTC")
-            )
-            return self.async_show_form(
-                step_id="init",
-                data_schema=vol.Schema(
-                    {
-                        vol.Required(
-                            CONF_PASSWORD,
-                            default=self.config_entry.data.get(CONF_PASSWORD),
-                        ): str,
-                        vol.Required(
-                            CONF_TIMEZONE,
-                            default=default_timezone,
-                        ): vol.In(pytz.all_timezones),
-                    }
-                ),
-                errors=errors,
-            )
+        # Default timezone
+        default_timezone = (
+            self.config_entry.options.get(CONF_TIMEZONE) or
+            self.config_entry.data.get(CONF_TIMEZONE, "UTC")
+        )
+        return self.async_show_form(
+            step_id="init",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_PASSWORD,
+                        default=self.config_entry.data.get(CONF_PASSWORD),
+                    ): str,
+                    vol.Required(
+                        CONF_TIMEZONE,
+                        default=default_timezone,
+                    ): vol.In(pytz.all_timezones),
+                }
+            ),
+            errors=errors,
+        )
 
                    
