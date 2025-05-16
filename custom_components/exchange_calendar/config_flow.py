@@ -51,7 +51,7 @@ class ExchangeCalendarConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     title=user_input[CONF_EMAIL],
                     data=user_input,
                 )
-           except Exception as err:
+            except Exception as err:
                 if "SSLError" in str(err):
                     errors["base"] = f"SSL Error"
                     _LOGGER.error(
