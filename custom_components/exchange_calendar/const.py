@@ -1,3 +1,4 @@
+"""Const.py constants for the integration"""
 DOMAIN = "exchange_calendar"
 
 CONF_EMAIL = "email"
