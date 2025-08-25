@@ -13,6 +13,7 @@ from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.util import dt as dt_util
 from requests.adapters import HTTPAdapter
 from urllib3.poolmanager import PoolManager
+from exchangelib.winzone import MS_TIMEZONE_TO_IANA_MAP
 
 import ssl
 import voluptuous as vol
@@ -61,6 +62,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     timezone = entry.data[CONF_TIMEZONE]
     auth_type = entry.data.get(CONF_AUTH_TYPE, "NTLM")
 
+    if "Customized Time Zone" not in MS_TIMEZONE_TO_IANA_MAP:
+        MS_TIMEZONE_TO_IANA_MAP["Customized Time Zone"] = timezone
+    
     try:
         credentials = Credentials(username=email, password=password)
         config = Configuration(
