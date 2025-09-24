@@ -1,183 +1,157 @@
+import datetime
 import logging
 import voluptuous as vol
-
+from exchangelib import Account, Credentials, Configuration, DELEGATE, CalendarItem
 from homeassistant import config_entries
 from homeassistant.core import callback
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from exchangelib.protocol import BaseProtocol, NoVerifyHTTPAdapter
+import pytz
 
 from .const import (
     DOMAIN,
-    CONF_N8N_URL,
-    CONF_MQTT_HOST,
-    CONF_MQTT_USERNAME,
-    CONF_MQTT_PASSWORD,
-    CONF_CONTEXT_WINDOW,
-    CONF_MAX_HISTORY,
-    CONF_KEEP_ALIVE,
-    CONF_ALLOW_THINKING,
+    CONF_SERVER,
+    CONF_EMAIL,
+    CONF_PASSWORD,
+    CONF_TIMEZONE,
+    CONF_AUTH_TYPE,
+    AUTH_TYPES,
 )
 
 _LOGGER = logging.getLogger(__name__)
 
-DEFAULT_CONTEXT_WINDOW = 5
-DEFAULT_MAX_HISTORY = 10
-DEFAULT_KEEP_ALIVE = 60
-DEFAULT_ALLOW_THINKING = False
+class ExchangeCalendarConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
+    """Handle a config flow for Exchange Calendar."""
 
-
-class MqttN8nAgentConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
-    """Handle a config flow for MQTT N8N Agent."""
-
-    VERSION = 2
-
-    def __init__(self):
-        self._n8n_url = None
-        self._mqtt_host = None
-        self._mqtt_username = None
-        self._mqtt_password = None
-        self._model = None
+    VERSION = 1
 
     async def async_step_user(self, user_input=None):
-        """Step 1: Ask for N8N URL and MQTT connection details."""
-
+        """Handle the initial step."""
         errors = {}
-
         if user_input is not None:
-            self._n8n_url = user_input[CONF_N8N_URL]
-            self._mqtt_host = user_input[CONF_MQTT_HOST]
-            self._mqtt_username = user_input.get(CONF_MQTT_USERNAME)
-            self._mqtt_password = user_input.get(CONF_MQTT_PASSWORD)
-
-            # Run both checks in executor to avoid blocking
             try:
-                model = await self.hass.async_add_executor_job(
-                    self._fetch_model_from_n8n_blocking, self._n8n_url
+                credentials = Credentials(
+                    username=user_input[CONF_EMAIL],
+                    password=user_input[CONF_PASSWORD],
                 )
-            except Exception as err:
-                _LOGGER.error("Failed to fetch model from N8N: %s", err)
-                errors["base"] = "n8n_connection_failed"
-                return self.async_show_form(
-                    step_id="user",
-                    data_schema=self._get_user_data_schema(),
-                    errors=errors,
+                config = Configuration(
+                    server=user_input[CONF_SERVER],
+                    credentials=credentials,
+                    auth_type=user_input[CONF_AUTH_TYPE],
                 )
 
-            try:
                 await self.hass.async_add_executor_job(
-                    self._test_mqtt_connection_blocking,
-                    self._mqtt_host,
-                    self._mqtt_username,
-                    self._mqtt_password,
+                    lambda: Account(
+                        primary_smtp_address=user_input[CONF_EMAIL],
+                        config=config,
+                        autodiscover=False,
+                        access_type=DELEGATE,
+                    )
+                )
+                return self.async_create_entry(
+                    title=user_input[CONF_EMAIL],
+                    data=user_input,
                 )
             except Exception as err:
-                _LOGGER.error("Failed to connect to MQTT broker: %s", err)
-                errors["base"] = "mqtt_connection_failed"
-                return self.async_show_form(
-                    step_id="user",
-                    data_schema=self._get_user_data_schema(),
-                    errors=errors,
-                )
+                if "SSLError" in str(err):
+                    errors["base"] = f"SSL Error"
+                    _LOGGER.error(
+                        "SSL certificate verification failed for %s. Fix the server's SSL certificate: %s",
+                        user_input[CONF_SERVER],
+                        err,
+                    )
+                elif "Unauth" in str(err):
+                    errors["base"] = f"Unauthorized"
+                    _LOGGER.error(
+                        "Authentication failed for %s. Error: %s",
+                        user_input[CONF_SERVER],
+                        err,
+                    )
+                else:
+                    errors["base"] = f"Connection failed"
+                    _LOGGER.error(
+                        "Connection failed for %s: %s", user_input[CONF_SERVER], err
+                    )
 
-            self._model = model
-
-            return await self.async_step_options()
 
         return self.async_show_form(
-            step_id="user", data_schema=self._get_user_data_schema()
-        )
-
-    async def async_step_options(self, user_input=None):
-        """Step 2: Configure agent options."""
-
-        errors = {}
-
-        if user_input is not None:
-            if user_input[CONF_KEEP_ALIVE] <= 0:
-                errors["keep_alive"] = "invalid_keep_alive"
-
-            if not errors:
-                data = {
-                    CONF_N8N_URL: self._n8n_url,
-                    CONF_MQTT_HOST: self._mqtt_host,
-                    CONF_MQTT_USERNAME: self._mqtt_username,
-                    CONF_MQTT_PASSWORD: self._mqtt_password,
-                    "model": self._model,
-                    "instructions": user_input.get("instructions", ""),
-                    CONF_CONTEXT_WINDOW: user_input[CONF_CONTEXT_WINDOW],
-                    CONF_MAX_HISTORY: user_input[CONF_MAX_HISTORY],
-                    CONF_KEEP_ALIVE: user_input[CONF_KEEP_ALIVE],
-                    CONF_ALLOW_THINKING: user_input[CONF_ALLOW_THINKING],
+            step_id="user",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_EMAIL): str,
+                    vol.Required(CONF_PASSWORD): str,
+                    vol.Required(CONF_SERVER): str,
+                    vol.Required(CONF_TIMEZONE, default="UTC"): vol.In(
+                        pytz.all_timezones
+                    ),
+                    vol.Required(CONF_AUTH_TYPE, default="NTLM"): vol.In(AUTH_TYPES),
                 }
-                return self.async_create_entry(title="MQTT N8N Agent", data=data)
-
-        defaults = {
-            CONF_CONTEXT_WINDOW: DEFAULT_CONTEXT_WINDOW,
-            CONF_MAX_HISTORY: DEFAULT_MAX_HISTORY,
-            CONF_KEEP_ALIVE: DEFAULT_KEEP_ALIVE,
-            CONF_ALLOW_THINKING: DEFAULT_ALLOW_THINKING,
-        }
-
-        data_schema = vol.Schema(
-            {
-                vol.Required("model", default=self._model): str,
-                vol.Required("instructions", default="You are a voice assistant for Home Assistant."): str,
-                vol.Required(CONF_CONTEXT_WINDOW, default=defaults[CONF_CONTEXT_WINDOW]): int,
-                vol.Required(CONF_MAX_HISTORY, default=defaults[CONF_MAX_HISTORY]): int,
-                vol.Required(CONF_KEEP_ALIVE, default=defaults[CONF_KEEP_ALIVE]): int,
-                vol.Required(CONF_ALLOW_THINKING, default=defaults[CONF_ALLOW_THINKING]): bool,
-            }
-        )
-
-        return self.async_show_form(
-            step_id="options",
-            data_schema=data_schema,
+            ),
             errors=errors,
-            description_placeholders={"model": self._model or "unknown"},
+            description_placeholders={
+                "ssl_error": "SSL certificate verification failed. Ensure the server's certificate is valid."
+            },
         )
-
-    def _get_user_data_schema(self):
-        return vol.Schema(
-            {
-                vol.Required(CONF_N8N_URL): str,
-                vol.Required(CONF_MQTT_HOST): str,
-                vol.Optional(CONF_MQTT_USERNAME): str,
-                vol.Optional(CONF_MQTT_PASSWORD): str,
-            }
-        )
-
-    def _fetch_model_from_n8n_blocking(self, n8n_url: str) -> str:
-        """Blocking method to fetch model name from N8N."""
-        import requests  # safe in executor
-        try:
-            resp = requests.get(f"{n8n_url.rstrip('/')}/api/model", timeout=5)
-            resp.raise_for_status()
-            data = resp.json()
-            model = data.get("model")
-            if not model:
-                raise ValueError("No model found in response")
-            return model
-        except Exception as e:
-            raise e
-
-    def _test_mqtt_connection_blocking(self, host, username=None, password=None):
-        """Blocking test MQTT connection using asyncio-mqtt, run in executor."""
-        import asyncio
-        from asyncio_mqtt import Client as MQTTClient
-        import asyncio_mqtt
-
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-
-        async def connect_test():
-            async with MQTTClient(hostname=host, username=username, password=password):
-                pass
-
-        try:
-            loop.run_until_complete(connect_test())
-        finally:
-            loop.close()
 
     @staticmethod
     @callback
     def async_get_options_flow(config_entry):
-        return MqttN8nAgentOptionsFlow(config_entry)
+        return ExchangeCalendarOptionsFlow(config_entry)
+
+class ExchangeCalendarOptionsFlow(config_entries.OptionsFlow):
+    """Handle options flow for Exchange Calendar."""
+    def __init__(self, config_entry):
+        """Initialize options flow."""
+        self.config_entry = config_entry
+        
+    async def async_step_init(self, user_input=None):
+        errors = {}
+        if user_input is not None:
+            try:
+                # Validate input explicitly if needed
+                if not user_input[CONF_PASSWORD]:
+                    errors["base"] = "Password cannot be empty"
+                if user_input[CONF_TIMEZONE] not in pytz.all_timezones:
+                    errors["base"] = "Invalid timezone"
+                if not errors:
+                    current_password = self.config_entry.options.get(CONF_PASSWORD, self.config_entry.data.get(CONF_PASSWORD))
+                    current_timezone = (
+                        self.config_entry.options.get(CONF_TIMEZONE) or
+                        self.config_entry.data.get(CONF_TIMEZONE, "UTC")
+                    )
+                    if (
+                        user_input[CONF_PASSWORD] != current_password or
+                        user_input[CONF_TIMEZONE] != current_timezone
+                    ):
+                        return self.async_create_entry(
+                            title="",
+                            data={
+                                CONF_PASSWORD: user_input[CONF_PASSWORD],
+                                CONF_TIMEZONE: user_input[CONF_TIMEZONE],
+                            }
+                        )
+                    return self.async_abort(reason="no_changes")
+            except vol.Invalid:
+                errors["base"] = "Invalid input provided"
+        # Default timezone
+        default_timezone = (
+            self.config_entry.options.get(CONF_TIMEZONE) or
+            self.config_entry.data.get(CONF_TIMEZONE, "UTC")
+        )
+        return self.async_show_form(
+            step_id="init",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_PASSWORD,
+                        default=self.config_entry.data.get(CONF_PASSWORD),
+                    ): str,
+                    vol.Required(
+                        CONF_TIMEZONE,
+                        default=default_timezone,
+                    ): vol.In(pytz.all_timezones),
+                }
+            ),
+            errors=errors,
+        )
+
+                   
