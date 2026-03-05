@@ -6,13 +6,12 @@ from typing import Any, Dict
 import pytz
 from exchangelib import Account, Credentials, Configuration, DELEGATE, CalendarItem
 from exchangelib.errors import EWSError, TransportError
+from exchangelib.items import SEND_TO_NONE
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, ServiceCall, ServiceResponse, SupportsResponse
 from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.util import dt as dt_util
-from requests.adapters import HTTPAdapter
-from urllib3.poolmanager import PoolManager
 from exchangelib.winzone import MS_TIMEZONE_TO_IANA_MAP
 
 import ssl
@@ -29,13 +28,13 @@ from .const import (
     SERVICE_CREATE_EVENT,
     SERVICE_DELETE_EVENT,
     SERVICE_SEARCH_EVENT,
+    SERVICE_EDIT_EVENT,
 )
 
 _LOGGER = logging.getLogger(__name__)
 
 PLATFORMS = [Platform.CALENDAR]
 
-# Define schema for create_event service
 CREATE_EVENT_SCHEMA = vol.Schema(
     {
         vol.Required("subject", default="New Event"): cv.string,
@@ -46,7 +45,6 @@ CREATE_EVENT_SCHEMA = vol.Schema(
     }
 )
 
-# Define schema for search_events service
 SEARCH_EVENTS_SCHEMA = vol.Schema(
     {
         vol.Required("date_start"): cv.datetime,
@@ -54,17 +52,36 @@ SEARCH_EVENTS_SCHEMA = vol.Schema(
     }
 )
 
+EDIT_EVENT_SCHEMA = vol.Schema(
+    {
+        # Subject to search for (finds the existing event)
+        vol.Required("subject"): cv.string,
+        # Optional new values - only provided fields are updated
+        vol.Optional("new_subject"): cv.string,
+        vol.Optional("new_date_start"): cv.datetime,
+        vol.Optional("new_date_end"): cv.datetime,
+        vol.Optional("new_location"): cv.string,
+        vol.Optional("new_body"): cv.string,
+        # Date window to search within (defaults to ±1 year from now)
+        vol.Optional("search_start"): cv.datetime,
+        vol.Optional("search_end"): cv.datetime,
+    }
+)
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Exchange Calendar from a config entry."""
+
+    # Always prefer options over original data so edits via the UI take effect
     email = entry.data[CONF_EMAIL]
-    password = entry.data[CONF_PASSWORD]
+    password = entry.options.get(CONF_PASSWORD) or entry.data[CONF_PASSWORD]
     server = entry.data[CONF_SERVER]
-    timezone = entry.data[CONF_TIMEZONE]
+    timezone = entry.options.get(CONF_TIMEZONE) or entry.data.get(CONF_TIMEZONE, "UTC")
     auth_type = entry.data.get(CONF_AUTH_TYPE, "NTLM")
 
     if "Customized Time Zone" not in MS_TIMEZONE_TO_IANA_MAP:
         MS_TIMEZONE_TO_IANA_MAP["Customized Time Zone"] = timezone
-    
+
     try:
         credentials = Credentials(username=email, password=password)
         config = Configuration(
@@ -91,18 +108,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         return True
     except TransportError as err:
-        if "SSLError" in str(err):
-            _LOGGER.error(
-                "1 SSL certificate verification failed for %s. Fix the server's SSL certificate: %s",
-                server,
-                err,
-            )
-        else:
-            _LOGGER.error("Failed to connect to Exchange server %s: %s", server, err)
+        _LOGGER.error("Failed to connect to Exchange server %s: %s", server, err)
         raise ConfigEntryNotReady from err
     except EWSError as err:
         _LOGGER.error("Failed to set up Exchange Calendar: %s", err)
         raise ConfigEntryNotReady from err
+
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
@@ -110,6 +121,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if unload_ok:
         hass.data[DOMAIN].pop(entry.entry_id)
     return unload_ok
+
 
 def async_register_services(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Register Exchange Calendar services."""
@@ -119,25 +131,18 @@ def async_register_services(hass: HomeAssistant, entry: ConfigEntry) -> None:
     async def create_event(call: ServiceCall) -> ServiceResponse:
         """Create a new calendar event."""
         try:
-            # Create a mutable copy of call.data
-            data = dict(call.data)
-
-            # Validate input using the schema
-            validated_data = CREATE_EVENT_SCHEMA(data)
+            validated_data = CREATE_EVENT_SCHEMA(dict(call.data))
             subject = validated_data["subject"]
             start_dt = validated_data["date_start"].astimezone(timezone)
             end_dt = validated_data["date_end"].astimezone(timezone)
             location = validated_data.get("location")
             body = validated_data.get("body")
 
-        # Offload all exchangelib operations to a thread executor
             def create_and_save_event():
                 try:
-                    # Access the calendar folder and create the event in a thread-safe manner
-                    calendar_folder = account.calendar  # This is the line causing the issue
                     event = CalendarItem(
                         account=account,
-                        folder=calendar_folder,
+                        folder=account.calendar,
                         subject=subject,
                         start=start_dt,
                         end=end_dt,
@@ -145,78 +150,46 @@ def async_register_services(hass: HomeAssistant, entry: ConfigEntry) -> None:
                         body=body,
                     )
                     event.save()
-                    return True, None, subject
+                    return True, None
                 except Exception as e:
-                    return False, str(e), None
+                    return False, str(e)
 
-            # Run the blocking operations in a thread executor
-            success, error, saved_subject = await hass.async_add_executor_job(create_and_save_event)
+            success, error = await hass.async_add_executor_job(create_and_save_event)
 
             if not success:
-                _LOGGER.error("Failed to create or save event: %s", error)
-                return {
-                    "entry_id": entry.entry_id,
-                    "error": f"Failed to create or save event: {error}",
-                    "success": False,
-                }
+                _LOGGER.error("Failed to create event: %s", error)
+                return {"success": False, "error": error}
 
-            _LOGGER.info("Created event: %s", saved_subject)
-            return {
-                "success": True
-            }
+            _LOGGER.info("Created event: %s", subject)
+            return {"success": True}
 
         except vol.Invalid as err:
-            _LOGGER.error("Invalid input for create event: %s", err)
-            return {
-                "entry_id": entry.entry_id,
-                "error": f"Invalid input for create event: {str(err)}",
-                "success": False,
-            }
+            _LOGGER.error("Invalid input for create_event: %s", err)
+            return {"success": False, "error": str(err)}
         except Exception as err:
             _LOGGER.error("Failed to create event: %s", err)
-            return {
-                "entry_id": entry.entry_id,
-                "error": f"Failed to create event: {str(err)}",
-                "success": False,
-            }
+            return {"success": False, "error": str(err)}
 
     async def delete_event(call: ServiceCall) -> ServiceResponse:
         """Delete a calendar event by ID."""
         event_id = call.data.get("event_id")
         try:
-            # Fetch the event by item_id using exchangelib
             event = await hass.async_add_executor_job(
                 lambda: account.calendar.get(id=event_id)
             )
-
             if not event:
                 raise ValueError(f"No event found with ID: {event_id}")
-
-            # Delete the event
             await hass.async_add_executor_job(event.delete)
             _LOGGER.info("Deleted event: %s", event_id)
-            response = {
-                "entry_id": entry.entry_id,
-                "success": True,
-            }
-            return response
+            return {"success": True}
         except Exception as err:
             _LOGGER.error("Failed to delete event: %s", err)
-            response = {
-                "entry_id": entry.entry_id ,
-                "error": f"Failed to delete event: {str(err)}",
-                "success": False,
-            }
-            return response
+            return {"success": False, "error": str(err)}
 
     async def search_event(call: ServiceCall) -> ServiceResponse:
         """Search for calendar events in a date range."""
         try:
-            # Create a mutable copy of call.data
-            data = dict(call.data)
-
-            # Validate input using the schema
-            validated_data = SEARCH_EVENTS_SCHEMA(data)
+            validated_data = SEARCH_EVENTS_SCHEMA(dict(call.data))
             start_dt = validated_data["date_start"].astimezone(timezone)
             end_dt = validated_data["date_end"].astimezone(timezone)
 
@@ -237,32 +210,113 @@ def async_register_services(hass: HomeAssistant, entry: ConfigEntry) -> None:
                 for event in events
             ]
             _LOGGER.info("Found %d events", len(event_list))
+            return {"success": True, "events": event_list, "count": len(event_list)}
 
-            # Respond to the service call with the results
-            response = {
-                "entry_id": entry.entry_id,
-                "events": event_list,
-                "count": len(event_list),
-                "success": True,
-            }
-            return response
         except vol.Invalid as err:
-            _LOGGER.error("Invalid input for search events: %s", err)
-            response = {
-                "entry_id": entry.entry_id,
-                "error": f"Invalid input: {str(err)}",
-                "success": False,
-            }
-            return response
+            _LOGGER.error("Invalid input for search_event: %s", err)
+            return {"success": False, "error": str(err)}
         except Exception as err:
             _LOGGER.error("Failed to search events: %s", err)
-            response = {
-                "entry_id": entry.entry_id,
-                "error": f"Failed to search events: {str(err)}",
-                "success": False,
-            }
-            return response
+            return {"success": False, "error": str(err)}
 
-    hass.services.async_register(DOMAIN, SERVICE_CREATE_EVENT, create_event, schema=CREATE_EVENT_SCHEMA)
-    hass.services.async_register(DOMAIN, SERVICE_DELETE_EVENT, delete_event)
-    hass.services.async_register(DOMAIN, SERVICE_SEARCH_EVENT, search_event, schema=SEARCH_EVENTS_SCHEMA, supports_response=SupportsResponse.ONLY)
+    async def edit_event(call: ServiceCall) -> ServiceResponse:
+        """Find a calendar event by subject and edit it.
+        
+        Searches within search_start/search_end (default ±1 year).
+        Only fields explicitly provided are updated.
+        
+        Example:
+            action: exchange_calendar.edit_event
+            data:
+              subject: "AFL - Home - Freo vs Melbourne - Round 2"
+              new_date_start: "2026-03-21 13:00:00"
+              new_date_end: "2026-03-21 15:30:00"
+        """
+        try:
+            validated_data = EDIT_EVENT_SCHEMA(dict(call.data))
+            search_subject = validated_data["subject"]
+
+            # Default search window: today ± 1 year
+            now = datetime.now(tz=timezone)
+            search_start = validated_data.get("search_start", now - timedelta(days=365))
+            search_end = validated_data.get("search_end", now + timedelta(days=365))
+
+            if search_start.tzinfo is None:
+                search_start = search_start.replace(tzinfo=timezone)
+            else:
+                search_start = search_start.astimezone(timezone)
+
+            if search_end.tzinfo is None:
+                search_end = search_end.replace(tzinfo=timezone)
+            else:
+                search_end = search_end.astimezone(timezone)
+
+            def find_and_edit():
+                # Search the calendar window for matching subject
+                events = list(account.calendar.view(start=search_start, end=search_end))
+                matches = [e for e in events if e.subject and search_subject.lower() in e.subject.lower()]
+
+                if not matches:
+                    return False, f"No event found matching subject: '{search_subject}'", None
+
+                if len(matches) > 1:
+                    subjects = [e.subject for e in matches]
+                    return False, f"Multiple events matched '{search_subject}': {subjects}. Use a more specific subject.", None
+
+                event = matches[0]
+                original_subject = event.subject
+
+                # Only update fields that were explicitly provided
+                changed_fields = []
+
+                if "new_subject" in validated_data:
+                    event.subject = validated_data["new_subject"]
+                    changed_fields.append("subject")
+
+                if "new_date_start" in validated_data:
+                    event.start = validated_data["new_date_start"].astimezone(timezone)
+                    changed_fields.append("start")
+
+                if "new_date_end" in validated_data:
+                    event.end = validated_data["new_date_end"].astimezone(timezone)
+                    changed_fields.append("end")
+
+                if "new_location" in validated_data:
+                    event.location = validated_data["new_location"]
+                    changed_fields.append("location")
+
+                if "new_body" in validated_data:
+                    event.body = validated_data["new_body"]
+                    changed_fields.append("body")
+
+                if not changed_fields:
+                    return False, "No new values provided — nothing to update.", None
+
+                event.save(update_fields=changed_fields)
+                return True, None, original_subject
+
+            success, error, original_subject = await hass.async_add_executor_job(find_and_edit)
+
+            if not success:
+                _LOGGER.error("edit_event failed: %s", error)
+                return {"success": False, "error": error}
+
+            _LOGGER.info("Edited event: %s", original_subject)
+            return {"success": True, "edited_subject": original_subject}
+
+        except vol.Invalid as err:
+            _LOGGER.error("Invalid input for edit_event: %s", err)
+            return {"success": False, "error": str(err)}
+        except Exception as err:
+            _LOGGER.error("Failed to edit event: %s", err)
+            return {"success": False, "error": str(err)}
+
+    # Register all services (only register if not already registered to avoid re-setup errors)
+    if not hass.services.has_service(DOMAIN, SERVICE_CREATE_EVENT):
+        hass.services.async_register(DOMAIN, SERVICE_CREATE_EVENT, create_event, schema=CREATE_EVENT_SCHEMA)
+    if not hass.services.has_service(DOMAIN, SERVICE_DELETE_EVENT):
+        hass.services.async_register(DOMAIN, SERVICE_DELETE_EVENT, delete_event)
+    if not hass.services.has_service(DOMAIN, SERVICE_SEARCH_EVENT):
+        hass.services.async_register(DOMAIN, SERVICE_SEARCH_EVENT, search_event, schema=SEARCH_EVENTS_SCHEMA, supports_response=SupportsResponse.ONLY)
+    if not hass.services.has_service(DOMAIN, SERVICE_EDIT_EVENT):
+        hass.services.async_register(DOMAIN, SERVICE_EDIT_EVENT, edit_event, schema=EDIT_EVENT_SCHEMA, supports_response=SupportsResponse.ONLY)
