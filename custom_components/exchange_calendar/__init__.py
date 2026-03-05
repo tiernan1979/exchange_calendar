@@ -6,7 +6,6 @@ from typing import Any, Dict
 import pytz
 from exchangelib import Account, Credentials, Configuration, DELEGATE, CalendarItem
 from exchangelib.errors import EWSError, TransportError
-from exchangelib.items import SEND_TO_NONE
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, ServiceCall, ServiceResponse, SupportsResponse
@@ -54,15 +53,12 @@ SEARCH_EVENTS_SCHEMA = vol.Schema(
 
 EDIT_EVENT_SCHEMA = vol.Schema(
     {
-        # Subject to search for (finds the existing event)
         vol.Required("subject"): cv.string,
-        # Optional new values - only provided fields are updated
         vol.Optional("new_subject"): cv.string,
         vol.Optional("new_date_start"): cv.datetime,
         vol.Optional("new_date_end"): cv.datetime,
         vol.Optional("new_location"): cv.string,
         vol.Optional("new_body"): cv.string,
-        # Date window to search within (defaults to ±1 year from now)
         vol.Optional("search_start"): cv.datetime,
         vol.Optional("search_end"): cv.datetime,
     }
@@ -71,12 +67,10 @@ EDIT_EVENT_SCHEMA = vol.Schema(
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Exchange Calendar from a config entry."""
-
-    # Always prefer options over original data so edits via the UI take effect
-    email = entry.data[CONF_EMAIL]
-    password = entry.options.get(CONF_PASSWORD) or entry.data[CONF_PASSWORD]
-    server = entry.data[CONF_SERVER]
-    timezone = entry.options.get(CONF_TIMEZONE) or entry.data.get(CONF_TIMEZONE, "UTC")
+    email     = entry.data[CONF_EMAIL]
+    password  = entry.options.get(CONF_PASSWORD) or entry.data[CONF_PASSWORD]
+    server    = entry.data[CONF_SERVER]
+    timezone  = entry.options.get(CONF_TIMEZONE) or entry.data.get(CONF_TIMEZONE, "UTC")
     auth_type = entry.data.get(CONF_AUTH_TYPE, "NTLM")
 
     if "Customized Time Zone" not in MS_TIMEZONE_TO_IANA_MAP:
@@ -105,8 +99,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         async_register_services(hass, entry)
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-
         return True
+
     except TransportError as err:
         _LOGGER.error("Failed to connect to Exchange server %s: %s", server, err)
         raise ConfigEntryNotReady from err
@@ -125,21 +119,40 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 def async_register_services(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Register Exchange Calendar services."""
-    account = hass.data[DOMAIN][entry.entry_id]["account"]
+    account  = hass.data[DOMAIN][entry.entry_id]["account"]
     timezone = hass.data[DOMAIN][entry.entry_id]["timezone"]
 
     async def create_event(call: ServiceCall) -> ServiceResponse:
-        """Create a new calendar event."""
+        """Create a calendar event, or update it if an event with the same subject already exists."""
         try:
             validated_data = CREATE_EVENT_SCHEMA(dict(call.data))
-            subject = validated_data["subject"]
+            subject  = validated_data["subject"]
             start_dt = validated_data["date_start"].astimezone(timezone)
-            end_dt = validated_data["date_end"].astimezone(timezone)
+            end_dt   = validated_data["date_end"].astimezone(timezone)
             location = validated_data.get("location")
-            body = validated_data.get("body")
+            body     = validated_data.get("body")
 
-            def create_and_save_event():
-                try:
+            def upsert_event():
+                # Search ±2 years for an existing event with exactly this subject
+                now          = datetime.now(tz=timezone)
+                search_start = now - timedelta(days=730)
+                search_end   = now + timedelta(days=730)
+
+                existing = [
+                    e for e in account.calendar.view(start=search_start, end=search_end)
+                    if e.subject and e.subject.lower() == subject.lower()
+                ]
+
+                if existing:
+                    event          = existing[0]
+                    event.start    = start_dt
+                    event.end      = end_dt
+                    event.location = location
+                    event.body     = body
+                    event.save(update_fields=["start", "end", "location", "body"])
+                    _LOGGER.info("Updated existing event: %s", subject)
+                    return True, None, "updated"
+                else:
                     event = CalendarItem(
                         account=account,
                         folder=account.calendar,
@@ -150,24 +163,22 @@ def async_register_services(hass: HomeAssistant, entry: ConfigEntry) -> None:
                         body=body,
                     )
                     event.save()
-                    return True, None
-                except Exception as e:
-                    return False, str(e)
+                    _LOGGER.info("Created new event: %s", subject)
+                    return True, None, "created"
 
-            success, error = await hass.async_add_executor_job(create_and_save_event)
+            success, error, action = await hass.async_add_executor_job(upsert_event)
 
             if not success:
-                _LOGGER.error("Failed to create event: %s", error)
+                _LOGGER.error("Failed to upsert event: %s", error)
                 return {"success": False, "error": error}
 
-            _LOGGER.info("Created event: %s", subject)
-            return {"success": True}
+            return {"success": True, "action": action}
 
         except vol.Invalid as err:
             _LOGGER.error("Invalid input for create_event: %s", err)
             return {"success": False, "error": str(err)}
         except Exception as err:
-            _LOGGER.error("Failed to create event: %s", err)
+            _LOGGER.error("Failed to create/update event: %s", err)
             return {"success": False, "error": str(err)}
 
     async def delete_event(call: ServiceCall) -> ServiceResponse:
@@ -191,23 +202,22 @@ def async_register_services(hass: HomeAssistant, entry: ConfigEntry) -> None:
         try:
             validated_data = SEARCH_EVENTS_SCHEMA(dict(call.data))
             start_dt = validated_data["date_start"].astimezone(timezone)
-            end_dt = validated_data["date_end"].astimezone(timezone)
+            end_dt   = validated_data["date_end"].astimezone(timezone)
 
             def get_events():
                 return list(account.calendar.view(start=start_dt, end=end_dt))
 
-            events = await hass.async_add_executor_job(get_events)
-
+            events     = await hass.async_add_executor_job(get_events)
             event_list = [
                 {
-                    "subject": event.subject,
-                    "start": event.start.isoformat(),
-                    "end": event.end.isoformat(),
-                    "location": event.location,
-                    "body": event.body,
-                    "id": event.id,
+                    "subject":  e.subject,
+                    "start":    e.start.isoformat(),
+                    "end":      e.end.isoformat(),
+                    "location": e.location,
+                    "body":     e.body,
+                    "id":       e.id,
                 }
-                for event in events
+                for e in events
             ]
             _LOGGER.info("Found %d events", len(event_list))
             return {"success": True, "events": event_list, "count": len(event_list)}
@@ -220,26 +230,14 @@ def async_register_services(hass: HomeAssistant, entry: ConfigEntry) -> None:
             return {"success": False, "error": str(err)}
 
     async def edit_event(call: ServiceCall) -> ServiceResponse:
-        """Find a calendar event by subject and edit it.
-        
-        Searches within search_start/search_end (default ±1 year).
-        Only fields explicitly provided are updated.
-        
-        Example:
-            action: exchange_calendar.edit_event
-            data:
-              subject: "AFL - Home - Freo vs Melbourne - Round 2"
-              new_date_start: "2026-03-21 13:00:00"
-              new_date_end: "2026-03-21 15:30:00"
-        """
+        """Find a calendar event by subject and edit only the fields provided."""
         try:
             validated_data = EDIT_EVENT_SCHEMA(dict(call.data))
             search_subject = validated_data["subject"]
 
-            # Default search window: today ± 1 year
-            now = datetime.now(tz=timezone)
+            now          = datetime.now(tz=timezone)
             search_start = validated_data.get("search_start", now - timedelta(days=365))
-            search_end = validated_data.get("search_end", now + timedelta(days=365))
+            search_end   = validated_data.get("search_end",   now + timedelta(days=365))
 
             if search_start.tzinfo is None:
                 search_start = search_start.replace(tzinfo=timezone)
@@ -252,39 +250,30 @@ def async_register_services(hass: HomeAssistant, entry: ConfigEntry) -> None:
                 search_end = search_end.astimezone(timezone)
 
             def find_and_edit():
-                # Search the calendar window for matching subject
-                events = list(account.calendar.view(start=search_start, end=search_end))
+                events  = list(account.calendar.view(start=search_start, end=search_end))
                 matches = [e for e in events if e.subject and search_subject.lower() in e.subject.lower()]
 
                 if not matches:
                     return False, f"No event found matching subject: '{search_subject}'", None
-
                 if len(matches) > 1:
-                    subjects = [e.subject for e in matches]
-                    return False, f"Multiple events matched '{search_subject}': {subjects}. Use a more specific subject.", None
+                    return False, f"Multiple events matched '{search_subject}': {[e.subject for e in matches]}. Use a more specific subject.", None
 
-                event = matches[0]
+                event            = matches[0]
                 original_subject = event.subject
-
-                # Only update fields that were explicitly provided
-                changed_fields = []
+                changed_fields   = []
 
                 if "new_subject" in validated_data:
                     event.subject = validated_data["new_subject"]
                     changed_fields.append("subject")
-
                 if "new_date_start" in validated_data:
                     event.start = validated_data["new_date_start"].astimezone(timezone)
                     changed_fields.append("start")
-
                 if "new_date_end" in validated_data:
                     event.end = validated_data["new_date_end"].astimezone(timezone)
                     changed_fields.append("end")
-
                 if "new_location" in validated_data:
                     event.location = validated_data["new_location"]
                     changed_fields.append("location")
-
                 if "new_body" in validated_data:
                     event.body = validated_data["new_body"]
                     changed_fields.append("body")
@@ -311,9 +300,8 @@ def async_register_services(hass: HomeAssistant, entry: ConfigEntry) -> None:
             _LOGGER.error("Failed to edit event: %s", err)
             return {"success": False, "error": str(err)}
 
-    # Register all services (only register if not already registered to avoid re-setup errors)
     if not hass.services.has_service(DOMAIN, SERVICE_CREATE_EVENT):
-        hass.services.async_register(DOMAIN, SERVICE_CREATE_EVENT, create_event, schema=CREATE_EVENT_SCHEMA)
+        hass.services.async_register(DOMAIN, SERVICE_CREATE_EVENT, create_event, schema=CREATE_EVENT_SCHEMA, supports_response=SupportsResponse.ONLY)
     if not hass.services.has_service(DOMAIN, SERVICE_DELETE_EVENT):
         hass.services.async_register(DOMAIN, SERVICE_DELETE_EVENT, delete_event)
     if not hass.services.has_service(DOMAIN, SERVICE_SEARCH_EVENT):
