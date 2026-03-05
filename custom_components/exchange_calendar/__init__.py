@@ -133,9 +133,9 @@ def async_register_services(hass: HomeAssistant, entry: ConfigEntry) -> None:
             body     = validated_data.get("body")
 
             def upsert_event():
-                # Search ±2 years for an existing event with exactly this subject
+                # Search from now to +2 years (future events only, stays within Exchange limit)
                 now          = datetime.now(tz=timezone)
-                search_start = now - timedelta(days=730)
+                search_start = now
                 search_end   = now + timedelta(days=730)
 
                 existing = [
