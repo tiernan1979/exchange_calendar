@@ -66,3 +66,68 @@ search_event:
       required: true
       selector:
         datetime: {}
+
+edit_event:
+  name: Edit Calendar Event
+  description: >
+    Finds an existing Exchange calendar event by subject and updates the fields
+    you provide. Only supplied fields are changed — omit any field to leave it
+    as-is. If multiple events match the subject, the call will fail and you
+    should provide a more specific subject.
+  fields:
+    subject:
+      name: Subject (search)
+      description: >
+        The subject of the event to find. A case-insensitive partial match is
+        used, so "Freo vs Melbourne" will match "AFL - Home - Freo vs Melbourne
+        - Round 2".
+      example: "Freo vs Melbourne"
+      required: true
+      selector:
+        text:
+    new_subject:
+      name: New Subject
+      description: Replace the event subject with this value.
+      example: "AFL - Home - Freo vs Melbourne - Round 2 (Updated)"
+      selector:
+        text:
+    new_date_start:
+      name: New Start Time
+      description: Replace the event start time.
+      example: "2026-03-21 14:00:00"
+      selector:
+        datetime: {}
+    new_date_end:
+      name: New End Time
+      description: Replace the event end time.
+      example: "2026-03-21 16:30:00"
+      selector:
+        datetime: {}
+    new_location:
+      name: New Location
+      description: Replace the event location.
+      example: "Optus Stadium Perth"
+      selector:
+        text:
+    new_body:
+      name: New Body
+      description: Replace the event body/description.
+      example: "Updated details for this event."
+      selector:
+        text:
+    search_start:
+      name: Search Window Start
+      description: >
+        Start of the date range to search for the event. Defaults to 1 year
+        before today if not provided.
+      example: "2026-01-01 00:00:00"
+      selector:
+        datetime: {}
+    search_end:
+      name: Search Window End
+      description: >
+        End of the date range to search for the event. Defaults to 1 year
+        after today if not provided.
+      example: "2026-12-31 23:59:59"
+      selector:
+        datetime: {}
