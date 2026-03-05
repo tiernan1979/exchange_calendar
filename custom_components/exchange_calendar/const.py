@@ -12,3 +12,4 @@ AUTH_TYPES = ["NTLM", "basic"]
 SERVICE_CREATE_EVENT = "create_event"
 SERVICE_DELETE_EVENT = "delete_event"
 SERVICE_SEARCH_EVENT = "search_event"
+SERVICE_EDIT_EVENT = "edit_event"
